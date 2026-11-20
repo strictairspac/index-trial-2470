@@ -5,7 +5,15 @@
 ## 业务场景
 上游来自泵站温升告警与值班 SQL 文件。过去同事在表格记录列顺序、手动建索引后截取计划，存在参数版本混乱、前后结果不一致未发现、写入代价未记录三项痛点。本站生成固定 SELECT，在专用 5,000 行遥测库内串行建索引、采集执行计划、保存输入快照，交给可靠性复核人判断。
 
-模块：工作负载录入/编辑、候选列序设计、后台试验队列、真实结果对比/JSON 导出；管理员另有审计。核心实体 workloads / candidates / experiments，样本表 telemetry。
+模块：工作负载录入/编辑、候选列序设计、后台试验队列、真实结果对比/JSON 导出；管理员另有审计。核心实体 workloads / candidates / experiments，样本表 telemetry。另有缺测登记与批量补录域（实体 missing_intervals / device_readings / idempotency_keys）。
+
+## 缺测登记与批量补录
+巡检要确认设备哪段时间确实没采到数据，所有时间区间统一半开 `[start_at, end_at)`，含起点不含终点。
+- `GET /api/gaps?device_id=&start_at=&end_at=`：合并「已登记缺测区间」与「读数点锚定的空档」，返回窗口内确认无数据的空区间，支持游标分页；窗口内一个读数都没有且无登记时不臆造空档。
+- `POST /api/missing-intervals`（operator/admin，带 `request_id`）：登记缺测。区间内已有读数、或与已有缺测区间重叠即拒绝（409）；相邻（端点相接）允许。
+- `POST /api/readings/backfill`（operator/admin，带 `request_id`）：批量补录。任一条落在缺测区间内、与已有读数同时刻重复、或批次内自身重复，整批拒绝并回滚（409），冲突逐条给出 `device_id`/`time`/`reason`。
+- 并发：同设备先提交者胜，后到者 409；不同设备锁不同行，可同时写入。写请求按 `request_id` 幂等，响应（含 409）落 `idempotency_keys`，中断后同 `request_id` 重试返回首次结果且不重复写入。
+- 本地无 Docker/pip 时，`backend/local`（仅标准库 sqlite3 + http.server）挂载同一套领域服务，`python -m unittest discover -s tests` 与 `python tests/http_verification.py` 可直接验证；SQLite 只有库级写锁，写事务在适配层串行，MySQL 上为行级真并行。
 
 ## 快速启动
 ```sh
